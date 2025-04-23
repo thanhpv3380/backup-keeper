@@ -1,5 +1,5 @@
 package domain
 
 type BackupUseCase interface {
-	Execute() error
+	Execute(dataSource string) error
 }

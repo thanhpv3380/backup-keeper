@@ -2,7 +2,7 @@ package usecase
 
 import (
 	"backup-keeper/internal/domain"
-	"time"
+	"backup-keeper/internal/utils"
 )
 
 type backupUseCase struct {
@@ -23,23 +23,19 @@ func NewBackupUseCase(
 	}
 }
 
-func (uc *backupUseCase) Execute() error {
+func (uc *backupUseCase) Execute(dataSource string) error {
 	data, err := uc.collector.Collect()
 	if err != nil {
-		uc.notifier.Notify("❌ Backup failed during collection: " + err.Error())
+		uc.notifier.Notify("ℹ️ Data Source: " + dataSource + "\n\n❌ Backup failed during collection: " + err.Error())
 		return err
 	}
 
-	filename := "backup_" + generateTimestamp() + ".json"
+	filename := "backup_" + utils.GenerateTimestamp() + ".zip"
 	if err := uc.storage.Save(filename, data); err != nil {
-		uc.notifier.Notify("❌ Backup failed during upload: " + err.Error())
+		uc.notifier.Notify("ℹ️ Data Source: " + dataSource + "\n\n❌ Backup failed during upload: " + err.Error())
 		return err
 	}
 
-	uc.notifier.Notify("✅ Backup successful: " + filename)
+	uc.notifier.Notify("ℹ️ Data Source: " + dataSource + "\n\n✅ Backup successful: " + filename)
 	return nil
-}
-
-func generateTimestamp() string {
-	return time.Now().Format("20060102_150405")
 }

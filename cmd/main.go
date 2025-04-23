@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"backup-keeper/config"
 	"backup-keeper/internal/infrastructure/collector"
@@ -22,7 +23,6 @@ func main() {
 	collector, err := collector.NewMongoDBCollector(
 		cfg.MongoDB.URI,
 		cfg.MongoDB.Database,
-		cfg.MongoDB.Collections,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create MongoDB collector: %v", err)
@@ -38,7 +38,7 @@ func main() {
 	// Initialize Google Drive storage
 	storage, err := storage.NewGoogleDriveStorage(
 		cfg.GoogleDrive.CredentialsFile,
-		cfg.GoogleDrive.TokenFile,
+		cfg.GoogleDrive.FolderId,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create Google Drive storage: %v", err)
@@ -47,12 +47,13 @@ func main() {
 	backupService := usecase.NewBackupUseCase(collector, storage, notifier)
 
 	// Create cron scheduler
-	c := cron.New(cron.WithLocation(cfg.Backup.TimeZone))
+	backupTimezone, _ := time.LoadLocation(cfg.Backup.TimeZone)
+	c := cron.New(cron.WithLocation(backupTimezone))
 
 	// Add cron job
 	_, err = c.AddFunc(cfg.Backup.CronSchedule, func() {
 		log.Println("Starting scheduled backup...")
-		backupService.Execute()
+		backupService.Execute(cfg.Backup.DataSource)
 	})
 	if err != nil {
 		log.Fatalf("Failed to schedule backup job: %v", err)
@@ -61,7 +62,7 @@ func main() {
 	// Run initial backup immediately
 	go func() {
 		log.Println("Running initial backup...")
-		backupService.Execute()
+		backupService.Execute(cfg.Backup.DataSource)
 	}()
 
 	// Start cron scheduler

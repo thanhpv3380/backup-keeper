@@ -1,51 +1,79 @@
 package config
 
 import (
-	"time"
+	"log"
+	"os"
+	"sync"
+
+	"github.com/joho/godotenv"
 )
 
-type Config struct {
-	MongoDB struct {
-		URI         string
-		Database    string
-		Collections []string
-	}
-
-	Telegram struct {
-		BotToken string
-		ChatID   int64
-	}
-
-	GoogleDrive struct {
-		CredentialsFile string
-		TokenFile       string
-	}
-
-	Backup struct {
-		CronSchedule string
-		TimeZone     *time.Location
-	}
+type MongoDB struct {
+	URI      string
+	Database string
 }
 
+type Telegram struct {
+	BotToken string
+	ChatID   string
+}
+
+type GoogleDrive struct {
+	CredentialsFile string
+	FolderId        string
+}
+
+type Backup struct {
+	DataSource   string
+	CronSchedule string
+	TimeZone     string
+}
+
+type Config struct {
+	MongoDB     MongoDB
+	Telegram    Telegram
+	GoogleDrive GoogleDrive
+	Backup      Backup
+}
+
+var (
+	Cfg  *Config
+	once sync.Once
+)
+
 func Load() *Config {
-	cfg := &Config{}
+	once.Do(func() {
+		if err := godotenv.Load(); err != nil {
+			log.Println("No .env file found. Using default values or system environment variables.")
+		}
 
-	// MongoDB config
-	cfg.MongoDB.URI = "mongodb://localhost:27017"
-	cfg.MongoDB.Database = "myapp"
-	cfg.MongoDB.Collections = []string{"users", "products", "orders"}
+		Cfg = &Config{
+			MongoDB: MongoDB{
+				URI:      getEnv("MONGODB_URI", ""),
+				Database: getEnv("MONGODB_DATABASE", "jcce"),
+			},
+			Telegram: Telegram{
+				BotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
+				ChatID:   getEnv("TELEGRAM_CHAT_ID", ""),
+			},
+			GoogleDrive: GoogleDrive{
+				CredentialsFile: getEnv("GOOGLE_DRIVE_CREDENTIALS_FILE", ""),
+				FolderId:        getEnv("GOOGLE_DRIVE_FOLDER_ID", ""),
+			},
+			Backup: Backup{
+				DataSource:   getEnv("BACKUP_DATA_SOURCE", ""),
+				CronSchedule: getEnv("BACKUP_CRON_SCHEDULE", ""),
+				TimeZone:     getEnv("BACKUP_TIMEZONE", "Asia/Ho_Chi_Minh"),
+			},
+		}
+	})
 
-	// Telegram config
-	cfg.Telegram.BotToken = "YOUR_TELEGRAM_BOT_TOKEN"
-	cfg.Telegram.ChatID = 123456789 // Your chat ID
+	return Cfg
+}
 
-	// Google Drive config
-	cfg.GoogleDrive.CredentialsFile = "credentials.json"
-	cfg.GoogleDrive.TokenFile = "YOUR_GOOGLE_DRIVE_FOLDER_ID"
-
-	// Backup schedule (every day at midnight)
-	cfg.Backup.CronSchedule = "0 0 * * *"
-	cfg.Backup.TimeZone, _ = time.LoadLocation("Asia/Ho_Chi_Minh")
-
-	return cfg
+func getEnv(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return defaultValue
 }

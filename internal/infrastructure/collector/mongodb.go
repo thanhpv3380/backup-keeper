@@ -1,14 +1,13 @@
 package collector
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
 	"backup-keeper/internal/domain"
+	"backup-keeper/internal/utils"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -16,12 +15,12 @@ import (
 )
 
 type MongoDBCollector struct {
-	client      *mongo.Client
-	database    string
-	collections []string
+	client    *mongo.Client
+	database  string
+	batchSize int
 }
 
-func NewMongoDBCollector(uri, database string, collections []string) (domain.Collector, error) {
+func NewMongoDBCollector(uri, database string) (domain.Collector, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -30,53 +29,109 @@ func NewMongoDBCollector(uri, database string, collections []string) (domain.Col
 		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
 	}
 
-	log.Println("MongoDB collector initialized")
+	if err := client.Ping(ctx, nil); err != nil {
+		return nil, fmt.Errorf("failed to ping MongoDB: %v", err)
+	}
+
+	log.Println("MongoDB collector initialized and connection verified")
 
 	return &MongoDBCollector{
-		client:      client,
-		database:    database,
-		collections: collections,
+		client:    client,
+		database:  database,
+		batchSize: 100000,
 	}, nil
 }
 
-func (c *MongoDBCollector) Collect() ([]byte, error) {
+func (c *MongoDBCollector) Collect() (interface{}, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Create a buffer to hold all collections data
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
+	db := c.client.Database(c.database)
+	collections, err := db.ListCollectionNames(ctx, bson.D{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get list collections: %v", err)
+	}
 
-	// Create a map to hold all collections data
-	collectionsData := make(map[string]interface{})
+	filePaths := make([]string, 0)
 
-	for _, collection := range c.collections {
-		// Get all documents from collection
-		cursor, err := c.client.Database(c.database).Collection(collection).Find(ctx, bson.M{})
+	for _, coll := range collections {
+		log.Println("Processing collection: ", coll)
+
+		tempFilePaths, err := dumpToTempFiles(ctx, db, coll, c.batchSize)
+
 		if err != nil {
-			return nil, fmt.Errorf("failed to query collection %s: %v", collection, err)
+			log.Println("Error ", err)
+			continue
 		}
 
-		var results []bson.M
-		if err = cursor.All(ctx, &results); err != nil {
-			return nil, fmt.Errorf("failed to decode collection %s: %v", collection, err)
-		}
-
-		// Convert BSON to JSON-serializable format
-		var jsonResults []map[string]interface{}
-		for _, doc := range results {
-			jsonResults = append(jsonResults, doc)
-		}
-
-		collectionsData[collection] = jsonResults
+		filePaths = append(filePaths, tempFilePaths...)
+		log.Println("Done collection: ", coll)
 	}
 
-	// Encode all data to JSON
-	if err := encoder.Encode(collectionsData); err != nil {
-		return nil, fmt.Errorf("failed to encode collections data: %v", err)
+	finalZipFile := fmt.Sprintf("dump_%s.zip", time.Now().Format("20060102_150405"))
+	if err := utils.ZipFiles(filePaths, finalZipFile); err != nil {
+		log.Println("Error ", err)
 	}
 
-	return buffer.Bytes(), nil
+	for _, tempFile := range filePaths {
+		if err := utils.DeleteFile(tempFile); err != nil {
+			log.Println("⚠️ Warning: Failed to delete temp file: " + tempFile + " - error: " + err.Error())
+		}
+	}
+
+	return finalZipFile, nil
+}
+
+func dumpToTempFiles(ctx context.Context, db *mongo.Database, collName string, batchSize int) ([]string, error) {
+	coll := db.Collection(collName)
+
+	cursor, err := coll.Find(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var (
+		docs     []bson.M
+		docCount = 0
+		chunkNum = 1
+	)
+
+	filePaths := make([]string, 0)
+
+	for cursor.Next(ctx) {
+		var doc bson.M
+		if err := cursor.Decode(&doc); err != nil {
+			return nil, err
+		}
+
+		docs = append(docs, doc)
+		docCount++
+
+		if docCount == batchSize {
+			tempFile := fmt.Sprintf("%s_part_%d_size_%d", collName, chunkNum, docCount)
+			if _, err := utils.WriteBatchToJson(docs, tempFile); err != nil {
+				return nil, err
+			}
+
+			filePaths = append(filePaths, tempFile)
+
+			docs = nil
+			docCount = 0
+			chunkNum++
+		}
+	}
+
+	if docCount > 0 {
+		tempFile := fmt.Sprintf("%s_part_%d_size_%d", collName, chunkNum, docCount)
+		if _, err := utils.WriteBatchToJson(docs, tempFile); err != nil {
+			return nil, err
+		}
+
+		filePaths = append(filePaths, tempFile)
+	}
+
+	return filePaths, nil
 }
 
 func (c *MongoDBCollector) Close() error {
